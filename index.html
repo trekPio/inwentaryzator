@@ -1,0 +1,953 @@
+<!DOCTYPE html>
+<html lang="pl-PL">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Inwentaryzator – spis z natury</title>
+<!--
+  SIGMA
+  autor   : Piotr Pałczyński              mailto: piotr.palczynski@sigma.info.pl
+  data    : 2026-11-12
+  versja  : 20261112_h12m10
+  (versja widoczna też w nagłówku strony – element .wersja, zapis „ver: rrrrMMdd_GG.MM”; aktualizować oba miejsca przy każdej zmianie)
+
+  Inwentaryzator – kolektor spisu z natury w przeglądarce (wersja 2.0, 2026-11-10)
+  Na bazie "Collector by PePe" (index_hist.html).
+
+  Wynik (format cechy DaneSpisu, bez nagłówka), opcje w oknie parametrów eksportu:
+    #START;rrrr-mm-dd gg:mm / #KONIEC;rrrr-mm-dd gg:mm          – opcja „data i godzina rozpoczęcia i zakończenia”
+    Lokalizacja;NumerInwentarzowy;Ilosc[;rrrr-mm-dd gg:mm:ss]    – 4. kolumna: opcja „data i godzina skanowania pozycji”
+  Bez opcji – sam format Lokalizacja;NumerInwentarzowy;Ilosc (zgodny z DaneSpisu z 2026-10-13).
+  Skanowanie kamerą telefonu (od 20261112_h11m53): getUserMedia + BarcodeDetector (Chrome na Androidzie), bez bibliotek.
+  Eksport do pliku i schowka – wybór formatu CSV / XML / JSON (format własny „sigma.inwentaryzator.spis” 1.0,
+  import DaneSpisu od wersji 20261112_h08m53 czyta wszystkie trzy;
+  opis: Dokumentacja\Format_XML_JSON\Format_XML_JSON_opis.md). Ten sam wybór formatu dla schowka.
+  (import spisu do inwentaryzacji ŚT w enova365).
+
+  Zmiany względem wersji 1:
+   - spis zapisywany w pamięci przeglądarki po każdym skanie (przetrwa odświeżenie / zamknięcie karty),
+   - walidacja lokalizacji, kodu i ilości (import enova odrzuca cały plik przy jednej złej linii),
+   - Enter ze skanera zatwierdza pozycję (tryb szybki: ilość 1),
+   - lista skanów z licznikiem, usuwanie pozycji, cofnięcie ostatniego skanu, ostrzeżenie o duplikacie,
+   - eksport do pliku i do schowka; dane kasowane dopiero po potwierdzeniu,
+   - brak zależności zewnętrznych – działa w pełni offline.
+-->
+<style>
+  :root {
+    --bg: #f2f2f2; --panel: #ffffff; --text: #1a1a1a; --muted: #666;
+    --line: #c8c8c8; --accent: #1f5fa8; --ok: #2e7d32; --warn: #b26a00; --err: #c62828;
+    --focus: #d9ecff;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; font-size: 18px; }
+  body { padding: 10px; max-width: 720px; margin: 0 auto; }
+  /* nagłówek strony – kontenerek z ciemnym tłem i cieniowaną czcionką */
+  h1 { font-size: 1.05rem; margin: 0 0 10px; padding: 9px 12px; font-weight: 700; color: #fff; letter-spacing: .01em;
+    background: linear-gradient(180deg, #2f5f96 0%, #1f466f 100%); border: 1px solid #183a5c; border-radius: 6px;
+    box-shadow: 0 3px 8px rgba(0,0,0,.25), 0 1px 2px rgba(0,0,0,.15); text-shadow: 1px 1px 2px rgba(0,0,0,.55);
+    display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  h1 .prawo { display: flex; flex-direction: column-reverse; align-items: flex-end; gap: 3px; flex: none; }   /* logo, pod nim wersja */
+  h1 .wersja { font-size: .6rem; font-weight: 400; opacity: .8; letter-spacing: 0; text-shadow: 1px 1px 1px rgba(0,0,0,.4); white-space: nowrap; }
+  h1 .logo { height: 22px; width: auto; flex: none; filter: drop-shadow(1px 1px 1.5px rgba(0,0,0,.45)); }   /* logo Sigma (białe, osadzone w pliku) */
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px; margin-bottom: 10px; }
+  label { display: block; font-size: .85rem; color: var(--muted); margin: 4px 0 2px; }
+  input[type=text] { width: 100%; font-size: 1.8rem; font-weight: 700; text-align: center;
+    padding: 10px 6px; border: 2px solid var(--line); border-radius: 6px; background: #fff; color: var(--text); }
+  input[type=text]:focus { outline: none; border-color: var(--accent); background: var(--focus); }
+  input.bad { border-color: var(--err); }
+  button { width: 100%; font-size: 1.4rem; font-weight: 700; padding: 14px 8px; margin-top: 8px;
+    border: 0; border-radius: 6px; color: #fff; background: var(--accent); cursor: pointer; }
+  button:active { filter: brightness(.85); }
+  button.secondary { background: #607d8b; }
+  button.ok { background: var(--ok); }
+  button.danger { background: var(--err); }
+  button.small { font-size: 1rem; padding: 10px 6px; }
+  /* główne przyciski – wysokie, łatwe do trafienia palcem */
+  button.big { min-height: 120px; font-size: 1.9rem; margin-top: 12px; }
+  button:disabled { background: #aaa; }
+  .row { display: flex; gap: 8px; }
+  .row > * { flex: 1; }
+  .lokbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .lokbar .lok { font-size: 1.6rem; font-weight: 500; word-break: break-all; }
+  .lokbar .cnt { font-size: 1rem; color: var(--muted); text-align: right; white-space: nowrap; }
+  .chk { display: flex; align-items: center; gap: 8px; font-size: 1rem; margin-top: 8px; }
+  .chk input { width: 24px; height: 24px; flex: none; }
+  #msg { min-height: 2.4em; padding: 6px 8px; border-radius: 6px; font-weight: 400; font-size: .85rem; text-align: center; margin-top: 3px; }
+  #msg.ok { background: #e3f3e4; color: var(--ok); }
+  #msg.warn { background: #fff1d6; color: var(--warn); }
+  #msg.err { background: #fde3e3; color: var(--err); }
+  #lista { list-style: none; margin: 0; padding: 4px 8px 10px; max-height: 45vh; overflow-y: auto; }
+  #lista li { display: flex; align-items: center; gap: 8px; padding: 10px 8px; font-size: 1.05rem;
+    background: #f7f9fb; border: 1px solid #b9c3cc; border-radius: 6px;
+    box-shadow: 0 3px 8px rgba(0,0,0,.22), 0 1px 2px rgba(0,0,0,.12); }   /* pozycja jako kontenerek jak przycisk */
+  #lista li + li { margin-top: 10px; }   /* odstęp między kontenerkami */
+  #lista li .nr { color: var(--muted); width: 2.6em; text-align: right; flex: none; }
+  #lista li .kod { flex: 1; font-weight: 700; word-break: break-all; line-height: 1.15; text-shadow: 1px 1px 2px rgba(0,0,0,.28); }   /* cień numeru */
+  #lista li .kod .godz { display: block; font-size: .65rem; line-height: 1; font-weight: 400; color: var(--muted); margin-top: -1px; text-shadow: none; font-variant-numeric: tabular-nums; }
+  #lista li .il { flex: none; min-width: 3em; text-align: right; }
+  #lista li .dup { color: var(--warn); font-size: .8rem; flex: none; }
+  /* przycisk usuwania pozycji – ikona X w kółku */
+  #lista li button { width: auto; margin: 0; padding: 4px; background: transparent; color: #5f6b76; flex: none;
+    display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; }
+  #lista li button:active { background: #e3e8ed; }
+  #lista li button svg { width: 28px; height: 28px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: square; pointer-events: none; }
+  .hidden { display: none !important; }
+  /* pole kodu z przyciskiem kamery */
+  .kodWiersz { display: flex; gap: 8px; align-items: stretch; }
+  .kodWiersz input { flex: 1; min-width: 0; }
+  button.kamera { width: 64px; flex: none; margin: 0; padding: 0; display: inline-flex; align-items: center; justify-content: center;
+    background: #f7f9fb; border: 1px solid #b9c3cc; color: #3d4a56; box-shadow: 0 2px 5px rgba(0,0,0,.15); }
+  button.kamera svg { width: 32px; height: 32px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linejoin: round; }
+  /* okno kamery */
+  .kamWidok { position: relative; margin: 10px 14px 0; background: #000; border-radius: 6px; overflow: hidden; aspect-ratio: 4 / 3; }
+  .kamWidok video { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .kamRamka { position: absolute; left: 10%; right: 10%; top: 30%; bottom: 30%; border: 3px solid rgba(255,255,255,.85);
+    border-radius: 8px; box-shadow: 0 0 0 2000px rgba(0,0,0,.25); pointer-events: none; transition: border-color .15s; }
+  .kamRamka.trafienie { border-color: #4caf50; }
+  .kamStatus { margin: 8px 14px 0; padding: 8px; border-radius: 6px; text-align: center; font-size: .9rem; line-height: 1.35; background: #f7f9fb; border: 1px solid #b9c3cc; min-height: 2.4em; }
+  .kamStatus.ok { background: #e3f3e4; color: var(--ok); border-color: #a9d3ac; }
+  .kamStatus.warn { background: #fff1d6; color: var(--warn); border-color: #e6c583; }
+  .kamStatus.err { background: #fde3e3; color: var(--err); border-color: #e3a3a3; }
+  .kamPrzyciski { padding: 0 14px 14px; }
+  #kameraTryb { word-break: normal; font-size: .82rem; }
+  /* diagnostyka: JavaScript wyłączony / błąd skryptu */
+  .bladJs { margin: 0 0 10px; padding: 10px 12px; border-radius: 6px; background: #fde3e3; color: #8e1b1b;
+    border: 1px solid #e3a3a3; font-size: .9rem; line-height: 1.35; }
+  .bladJs b { display: block; margin-bottom: 4px; }
+  .bladJs code { word-break: break-all; font-size: .85rem; }
+  /* ikona przycisku wykresu */
+  button.sort .ikWyk { width: 20px; height: 20px; fill: #5f6b76; stroke: #5f6b76; stroke-width: 1.6; stroke-linecap: round; }
+  /* okienko wykresu */
+  .modal { position: fixed; inset: 0; background: rgba(20,30,40,.55); display: flex; align-items: center; justify-content: center; padding: 12px; z-index: 50; }
+  .modalPanel { width: 100%; max-width: 560px; max-height: 100%; overflow-y: auto; background: #fff; border-radius: 8px; box-shadow: 0 10px 30px rgba(0,0,0,.35); }
+  .modalNag { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 10px 9px 14px; color: #fff; font-weight: 700;
+    font-size: 1.05rem; text-shadow: 1px 1px 2px rgba(0,0,0,.55); background: linear-gradient(180deg, #2f5f96 0%, #1f466f 100%); border-radius: 8px 8px 0 0; }
+  .mTyt { display: flex; flex-direction: column; line-height: 1.2; }
+  .mTyt > span:first-child { font-size: .85rem; }                                   /* „Przebieg spisu” – mniejsza czcionka */
+  .mTyt .mLok { font-size: 1rem; font-weight: 400; word-break: break-all; }          /* lokalizacja pod spodem, bez pogrubienia */
+  button.modalX { width: auto; margin: 0; padding: 2px; background: transparent; color: #fff; display: inline-flex; border-radius: 50%; }
+  button.modalX svg { width: 28px; height: 28px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: square; filter: drop-shadow(1px 1px 1px rgba(0,0,0,.4)); }
+  .modalOpis { font-size: .75rem; color: var(--muted); padding: 8px 14px 0; }
+  #wykresSvg { padding: 4px 8px 0; }
+  #wykresSvg svg { display: block; width: 100%; height: auto; }
+  #wykresSvg .brak { padding: 30px 10px; text-align: center; color: var(--muted); font-size: .9rem; }
+  .parOpcje { padding: 6px 14px 14px; }
+  .parOpcje .chk { font-size: .95rem; line-height: 1.3; }
+  /* wybór formatu – trzy przyciski w jednym kontenerku */
+  .parFormat { display: flex; align-items: center; gap: 6px; margin: 4px 0 6px; }
+  .parFormat .et { font-size: .8rem; color: var(--muted); margin-right: 4px; }
+  .parFormat label { flex: 1; }
+  .parFormat input { position: absolute; opacity: 0; pointer-events: none; }
+  .parFormat span:not(.et) { display: block; text-align: center; padding: 7px 4px; font-weight: 700; font-size: .95rem; color: #5f6b76;
+    background: #f7f9fb; border: 1px solid #b9c3cc; border-radius: 6px; box-shadow: 0 2px 5px rgba(0,0,0,.12); cursor: pointer; }
+  .parFormat input:checked + span { color: #fff; background: var(--accent); border-color: #174a85; }
+  .parFormat input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .parOpcje .chk small { color: var(--muted); font-size: .78rem; }
+  .parPodglad { margin: 10px 0 4px; background: #f7f9fb; border: 1px solid #b9c3cc; border-radius: 6px; padding: 5px 9px; box-shadow: 0 2px 5px rgba(0,0,0,.12); }
+  .parPodglad .et { font-size: .65rem; color: var(--muted); }
+  .parPodglad pre { margin: 2px 0 0; font-size: .72rem; line-height: 1.35; white-space: pre-wrap; word-break: break-all;
+    height: 16em; max-height: 45vh; overflow-y: scroll; padding-right: 4px; }   /* cały eksport, stały pionowy pasek przewijania */
+  .parPodglad pre::-webkit-scrollbar { width: 10px; }
+  .parPodglad pre::-webkit-scrollbar-track { background: #e8ecf0; border-radius: 5px; }
+  .parPodglad pre::-webkit-scrollbar-thumb { background: #9aa6b2; border-radius: 5px; }
+  .parPodglad pre { scrollbar-width: auto; scrollbar-color: #9aa6b2 #e8ecf0; }
+  .pods { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 8px 14px 14px; }
+  .pods > div { background: #f7f9fb; border: 1px solid #b9c3cc; border-radius: 6px; padding: 5px 9px; box-shadow: 0 2px 5px rgba(0,0,0,.14); }
+  .pods .et { font-size: .65rem; color: var(--muted); }
+  .pods .w { font-size: 1rem; font-weight: 500; font-variant-numeric: tabular-nums; }
+  .pods .w small { font-size: .7rem; color: var(--muted); font-weight: 400; }
+  .info { font-size: .85rem; color: var(--muted); margin-top: 6px; }
+  /* nagłówek listy pozycji z licznikiem po prawej */
+  .listaNag { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 8px; margin-bottom: 6px; }
+  .listaNag label { margin: 0; white-space: nowrap; }
+  .listaNag .licznik { margin-left: auto; }
+  .listaOpis { display: flex; align-items: center; gap: 5px; min-width: 0; }
+  .listaOpis label { white-space: normal; min-width: 0; }   /* na wąskim ekranie opis łamie się, przyciski zostają */
+  .listaOpis button { flex: none; }
+  /* ikona ⇅ z dwóch półstrzałek; ciemna = aktualne sortowanie, szara = druga
+     (w dół – najnowsze u góry, w górę – najstarsze u góry) */
+  button.sort .strz { width: 20px; height: 20px; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+  button.sort .strz path { stroke: #c3cad1; stroke-width: 2.8; transition: stroke .15s; }   /* obie strzałki tej samej grubości */
+  button.sort.aktywny:not(.gora) .strz .dn, button.sort.aktywny.gora .strz .up { stroke: var(--text); }   /* aktualne sortowanie – ciemna, druga szara */
+  /* przycisk A–Z / Z–A; nieaktywny przycisk sortowania – szary */
+  button.sort.az { font-size: .8rem; font-weight: 700; letter-spacing: .02em; min-width: 40px; color: #a7b1bb; }
+  button.sort.az.aktywny { color: var(--text); }
+  button.sort.aktywny { border-color: #7f8c99; }
+  /* przycisk sortowania – mały kontenerek ze strzałką (↓ najnowsze u góry, ↑ najstarsze u góry) */
+  button.sort { width: auto; margin: 0; padding: 0 6px; display: inline-flex; align-items: center; justify-content: center; min-height: 26px; font-size: 1rem; line-height: 1; font-weight: 700;
+    color: var(--text); background: #f7f9fb; border: 1px solid #b9c3cc; border-radius: 6px; box-shadow: 0 2px 5px rgba(0,0,0,.18); }
+  .licznik .pref { font-size: .75rem; font-weight: 400; color: var(--muted); }   /* prefiks mniejszy i cienki, liczba bez zmian */   /* przy braku miejsca licznik schodzi pod opis, wyrównany do prawej */
+  .licznik { flex: none; font-size: .85rem; font-weight: 500; line-height: 1.2; padding: 2px 16px; background: #f7f9fb;
+    border: 1px solid #b9c3cc; border-radius: 6px; box-shadow: 0 2px 5px rgba(0,0,0,.18); font-variant-numeric: tabular-nums; }
+  /* kontenerek z czasem pracy */
+  .czas { display: flex; gap: 6px; margin-top: 12px; padding: 10px 10px; background: #f7f9fb;
+    border: 1px solid #b9c3cc; border-radius: 6px; box-shadow: 0 3px 8px rgba(0,0,0,.22), 0 1px 2px rgba(0,0,0,.12); }
+  .czas > div { flex: 1; }
+  .czas { align-items: flex-end; }
+  .czas > div:last-child { text-align: right; }
+  .czas > div.srodek { flex: none; text-align: center; padding-bottom: 5px; }
+  .czas .et { font-size: .8rem; color: var(--muted); white-space: nowrap; }
+  .czas .wart { font-size: 1.35rem; font-weight: 500; font-variant-numeric: tabular-nums; }
+  .czas .data { font-size: .675rem; color: var(--muted); font-variant-numeric: tabular-nums; }   /* data rozpoczęcia – połowa wielkości godziny */
+</style>
+</head>
+<body>
+
+<noscript><div class="bladJs"><b>JavaScript jest wyłączony – kolektor nie działa.</b>
+  Strona została otwarta w aplikacji bez obsługi skryptów (na Androidzie często „HTML Viewer” / podgląd pliku).
+  Otwórz plik w przeglądarce Chrome: w podglądzie wybierz menu ⋮ → „Otwórz w Chrome” albo
+  w Chrome wpisz w pasku adresu ścieżkę pliku, np. <code>file:///sdcard/Download/inwentaryzator.html</code>.</div></noscript>
+<div id="bladSkryptu" class="bladJs hidden"></div>
+<script>
+  // przechwytywanie błędów skryptu – komunikat na ekranie (diagnostyka na urządzeniach mobilnych)
+  window.onerror = function (msg, plik, linia, kol) {
+    var d = document.getElementById("bladSkryptu");
+    if (d) {
+      d.className = "bladJs";
+      d.innerHTML = "<b>Błąd skryptu – kolektor może nie działać.</b>";
+      d.appendChild(document.createTextNode(String(msg) + " (linia " + linia + (kol ? ", kolumna " + kol : "") + "). " +
+        "Przeglądarka: " + navigator.userAgent));
+    }
+    return false;
+  };
+</script>
+<h1><span>Inwentaryzator&nbsp;– <span style="white-space:nowrap">spis z natury</span></span><span class="prawo"><span class="wersja" title="Wersja pliku">ver: 20261112_12.10</span><img class="logo" alt="Sigma" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAPkAAABICAYAAAA02VNAAAAdPUlEQVR42u2de5wkZXnvv09V9dxnl4uwXBe5iEYIqInGwyFxVxYk4MICuwssBiEmYsSDKCASE2dWDRqiORKIugTluoAbxWMUY3YXZnMkyAFyuBiU4w2R63Lbnem57Ex3vc/5o9635+2a6p6eizs7bT2fT326uqv67beq39/73H7vUyzWGz8DgG4IURVyySWX5pLX6gY9UG++Kgd6Lrk0pwQxI6WIrssO1JuuRlbH8M9BDvRccmkikAuEMcVySPdFi/XmLydAR3Kg55JLk4DcvkaGYimg6wMH6U3XI2KgNwd6Lrk0gchivbEMEtr3pYDuQszgLU/LueeiPckkIGtNfqtyyWV+a3InBUOxFNL1J4v1ltuTj3q1AvZccsll3oO8AvSAjrMO4rAN0BvC2hzoueQyf0Eumg30wZLQccZiDrvzjfQUkLUmB3ouucxLkCuQGV8rGAZLAR3LB3ndtw/QL7TnQM8ll3kIcs3W5L7pXg5oPzFg77sW6c2duxTQ1ab6ZnUj2XLJpYl98pRIZIG+tBX5/uv1+u4E6BvCOe+9oIjM8mZhnksuTSJyoN40JkiBSce1lgO6ImXHffDSyU/JR7ajG0JLnpkTLb7fszftEe+/z47WX7/cUg7LgRluz5y0xJR0qFwwC4BiqWCCuKSyoEvDsUETlHdoYY82wzPwzGu6DANPG4qHK0uWxIjkYM+lGUB+46gQtNCQ8tJyQGdkGH2wzLY/fk7+xytzAnTtCaBXFz1zW0/Q3n6JGRobwmgLKqEaBRUwoIpiRFBVVTH2c6OKoqJqMMmexMaAKLEqY9LVHWhx8LPbjjnjelRDROJ8qOQyXyWa4pwQGYbKAZ1vLbD7xn113buel9Uv73ygr1VAth5wxKf3+fXo4mDP3c83W7dDECREXU1s+cq8pYIoCYFPQIygCiL2HBUksK8lgxRaMfHQXgBs2ZL757n8NoG8CuhvKcDmRXrzCVtl9Ys7FeiComsB1RcOkj/d+5dfHwkWdH/QbCuOaUwBteA1FtiVfcAk79V+lpwrquPnl4PhUqRGS/nwyKUZpFaevEGgtxzdSnDP/nrdAcjqeKcG41xwTDeELx5y5oVm29A/yoIFLRCUMSIYEVUR1Ns3gaD+vn1vCDBiNw3UEFAOcw2eS7OAfLqxJYkMw+WAliNCOu45SG947c4HuiisMuiG8MXDV38ofnXoGunuLqihrCbR2hqDGkk0uAE1QDy+r3FyTKuOJcdzyeW3WJOngV54HbTcc6DeeGgC9J5oLoD+8htXXaTbB78oCxZEaqSsMePgrgH2NLgr73OQ59I8IJ8xyiLDcAzRwWJa7j5g+z8dhqwt0zc3QH/pyFUfMduKfy/dCyI1lCeA23vvtP0EsMfNrclVVVQ1UNXIbqG3Rd4WaIPLjTO+W9XONPsZpNrJ6mfYaPv2umetf7/Jduvczym7kTMHogKEoSmPxFJoP0g6O+/er/+6459b+P6f0tcTsXRteacBXdWgG8JXZNUlezz4DRN0L7jUbC+WMUQ1g24uIOf2jYIBEzcnuIFAkpSgNmqvqGqY3OLaqUSZpTSj7WMoImURMVPoowAhEEsNfoP9vDz7Q29221VVkVlM20bCDNhdarWiAgSh2bEjlrb2xdLefc++L92w7Pm9zn8C7YmQnQ/0V2XlZbvdf2ccdi243AF9HOATwV7ZN2L99KYDeGBBE1tAvAV4G/A7wD5Alx2o24BngJ8CjwFPiMiIBySx7VS1Dbwb6KR6MYTbf1BEfm4Hr9abTOzgLtv3v2P7+UbgIGChtT53AK8CTwI/Bh4Wkae874U+SNzvqupi4L97/XKvDwC/zLq2BsCoqtoJLM+47l+JyA8nu+6sSUNVT7LX69/PGPi2iIxOUZPXXKBSH9xW8yV5Zgd2Cc3gSBy0t+9PV/vd+7x807IX5L0/2flAx9DXF21/+9KP737vN410LbjC9BfLxEQgVek0VafTLPCNIk3mk7tBr6otwAXAnwFHNfj1p1R1C7BeRDbhKQVv8EbAjcDuNdr4MPAPVtOWa2hhsX3cA/gT4BwL8EYCucOq+gBwB3C7iAykjrvf/UPg1ozvbxKRE6ZhXrt23wv8Y8bxbwIra113DYvJAEcDd9U47XzgRlWNRKQhTE098GYsoOPx/YrmM9Z0L+6IJQj3C9rb7l706+uPRNaW0b6d6KOjLFka09cXbTv2jL+Mtw38jXRWgnGqnh9ORgAuuZ6g2QD+FuB+C7ajLFjL3hbbzf8Mq0HfC2xU1c2q+rYavvo2+50x7/uj3mtdbSgiRlXfDzwCfBF4qzO/M/qY/qwDWAJ8BXhEVdeoaksGaMcy+lgC3qmqvwsY55o0KLGqRsCFth9jqesenKbpf6n9f0a9ax2z+5fa32xYDTU+kjVJN6kXnc4EewxKGJqBHbEQ7BsuXLhp0fM3H4ksLdM3N0DvX3rGX5ltxU9JV3eEkVhj1XTQzQc7BmLTFAAPLMCPB/438GY7YIw13yK7Bfa92P3Qi9cYDxDHWe1UqKHVotTmPpNJzN12Vf06sA440Oujem2Etm9u839DLQBKwMHALcBuduKQqlFR3S/XtxD40FRMajt5KnCCdScAWlLtB1P5r+wkc6jV/q4911aL/ewIYLm9tmh2QK5+PtkCOq5ORTmwVwGfIDTF0Rhkn6ClffPev7jxKJbOAdCXWqAff1qP2T7YQ0d3hAYxMTqeLhM7gdn9JsiT20GjqvoG4E7rL5dTg88F4ILUJp7GlBTgb7c+YTjD/gkQWBfi28BqC1KTmniM1w9/w+ujm2Tc+TeJyIseECczuRU4S1UXWaA1Ak7X7sWzF78Tte21etec9bsf8/6PRkCuOrlpniaPVBNJKuelwV4BerAo6O7ctPcTcwB0xoE+cOKKT2l/8a9p74pUg5gyOp5KYzyt5g+deSx20FzrBdWi1GBxwHgWeNQG2p6154becfe+BHx5KgOs3tizwbFrgOOtOVpIKR7jWRYA24GXgKIHUL+P7rtXT0kVJP/2AuB8e8+CBnxnVdWjrHWjM5n0PC2+j3WNarXnJqS3q+o7rTYPGwB5LdOccY02AezZwCdOgT1OgK6DO2I02HuXAPq7V3zGDAx+QizQNVatEGFiZ7LPb5/cajBj/fDjPO3og0eAe2ww6g0i8iYRORo43Jqf5wDfsJFsZ9b+i4g86dqfhTjB8cD7LUBbJqoYAuCHNlB4JPA64DD7+mbgT4EN1vd12n+TiDzqXJUpuK0KXKCqbV4GYrIJ9CL73XgWJjwFPgh0Z2hxzdj/eMaxBkCuGeb4JH64D3ydQDixwNcw1MHRWAn3lo7ujYt+fPORcwT0Mn190eCpp15p+gevkPbOSDWs8tErmrzMfBY3QI7P0LoOPI8BJ4rIvSIy6A3eYRH5mYjcJiKrLJi+Zr93rc5OLX61GuhvyU7vxLaPnxCRY0TkqyLyuIi8LCIDIrJVRB4RkRtE5Ezgd4EvAMPAF120fiogs9f3WmCFBVw4idbdFzhzFrS42EllN+ADnvuU9X86bW6AZar6Vu9eNhBdTwO1rh8u2X64qcUuS4JxOpiY7trWtWn3h287IgFdT7RTh78D+spTPhcXBz8mbZ0RGhjnozufvEkyaIdkO2EAbBSRkqp2+tFyjw0XWo37hIi8D/h94H4bCY9nMKidFbDETiBpkMT2/dUicqXH/Aps3yTF2AtF5FcicilJ6qlvBn1UknRfPXfEad33WTcohhmVC3Nxg/OBvbwJzs8IPEslWV1liX2skWBhoMZGqGpyvCXDDyfDD88AvtdmJRg3uCOGYJ+oq23jng+tfwNL15Z3eikpC/Th1af8nfYPXkpbZ6jGA7qL085/ieqYpktVtVVEhizoxEZrk5X1IrE1qQMLpIdFZGwWrYxzmMi6c4B/Efhr5/s69psFr9uM/dzv48+nShSp4e8ek6UhPa3bbt2MxoLXk2vxNmv6a0ZQ9H4S3oB4IHd9PdUGVusGC4OKHx2nzfT6PnkV8E0Nn3wC2AUILdDD/aSjY9NeD91+6E5fveYBfeg9y79g+osfpa0zVA0MxubRTdgMIH8pw2dzg+H3gPtsTnkvHzQ2rRW4FI0D0ixFkMu23WMZT9n5WhzgThEpkmKgWQ0epjc3cahqwee4T6N/7rc+XENDOq17BkmqL2Zm6z9ce2daV8Gk2hPgVhHpAx73goTutQBcYtuQ2ppcRUkDelo+OdnWQDzxGIShFkdjgugA09K2afcfbFiMrI7ZMDdAHznvlP+pA4MfpqUjVBMosc73FJoboA9QnXLyB4+SMMrWAz9R1btU9S9V9Z0p0JtpAqaeFj/QDuq0v+n2t2T5/s4Mr7OVvIlqOua6ryEPydCQLu9+EcxKsU93by9NtWdsX14A/tn+5rUZvrkCa1T1wHraPCIGDSQ5RUUcBcHneFdx1G3ePGtxR9WxOvuJjx6EDIzE0tl5sHSwce8f3vaOF//b6q309ASs3YnPXnNAX7r0H1rX3WWktf0a1cAYYzXIlnkJcjcYN9mBssjzdX1AOcLJnsBJdgPYpqoPAt8BvmN54RM44TMA+QFWC6U1l9v/ubUmjNPg9v1+wJtojIs9CmyZYn9dKq4V+ICIfMxRTT3K6bEkbDwzw4BbZK2aU2zmwP9/3H25QUS2W/DeDnzK+u3q9bUDuEhELvP6mNbkaEXDmozg2VRz45U12SmfPMsNIAhNcbgsLW2vLwXtdy165OZOent1pz9N1QJ99IKTr9XhHRdQ6AwwpjBvQ+s212tN3os9s7icYbr7jDHHNNudhMl1DfAjVb1BVV9vzfbZ0Oq710gNOTN0e4aGBXgnCaf7e/a13vYtoC3DWmhUm5+nqgvx0mkeWaVeYG6qrsHlGVZYSJK6XGd/OxKRfsZ593Gqr+9T1ddQI/UXEAfj4PRM83FffZLceAbYqReAS4Ndg8hsHxoLOrt+b2yg6ztcd100w2jlzID+wZOuM1ufvwK1QaYjlug8BXpsNe/XbWpmzAvE+bRRBwKfiumDvhs4D/hPVb1whkB3/2tLnXPqhT1LjHPE4xqb47P3T9Gk1pSFsxewxgK7YLX5YSSr7WaaNnM8hj8CjklZBc7n/ra1oAKgbMH7FXsPQq+vsZ00L6iV+gu0AlSqfHKtS1vN0PLxJGD3K6/4YC+rIYxaTHFH2Ri+y+GHK729c4OMLVsMPRqMvfJ/Pi9GHgbg8d55W3vdA/o64O3AvzCRNhpPAnq3kKWTJE9++QyArp4pXU+TFiZpw99cX7O26UxAfsziQrcYxALoL+wE5afNdAa5mMszLBrnslxjzXTXl1BEfgps9P43P1tyoap2Z2nzAIOOA1DqctTJALvP/55QeaVmfTX7W2U1RC2BEg0zMraif8npf8+SJfFO9cnHp9fkxqwVU9jzj75vDEuTA0vm9XI0D+iPiMipNqr+ORIyjElpcDd4TGrAu1VPMfA5VT3a+rrTvTfb6gArpPaS1VbbF/caMbPotgPX88CDKX/YkCwGeZcFzp7AuV4f3aT4f4GHGjXhPR//TcCJGVo8IMn1/4cX/FRvWelVjOfJ8fq6L3BuljaPNAYJXNSbumWMawbTKsG6yQNwlfaNxhRaQwz9jIws37Zs1Q94aF0BkdKcALy3V+jt1Zbdjl3PbvscZ1545ns0ifgpMBF5hGQ55xWqeoQNIr2NhOxyJNCeGuy+hnED7QNWq02V0ulA9YzVfoVUEM0N+ENU9T+9Aey+93Pg6955agNxr2dahRGq3IBrgZsy+vtREblLVd8DvIbxNQCxff0nL2CpDf4fqqqXefc0SGnxQ1X1Pqpz46Q0d5gxQX5EVa8HxvxCFRFGVBGvgEIajBOj7VXAn7S2+cQJQo3G0tIaaszLZmT0pIHjVz1IX1/E7y/d+QDv6Qno7YW1a7Vlt2Pv0Jb21fRvMyhhs4Dcj4pbsAdWQzxOkn+90R47mITr/mfAH2QAxw3CY6xJOFXyrw/yp0h46OlKMgDvEJENatdOub6LyH3AfalruxK4wgPddGQ3G6x7lIQ1508iS1X1zcB7GCeruEIZRZJCFWc2+D/4y0nPqAFWgMV2a1TcZHsosFJE1ls3o5z45HHKHE/TUbNM85q5cSaa9xXfPXmvZY2lpS3Usr7AwMhxA8efkQB86dLyHIx+a6Kv1egLm+7Q1u7VOjg0ohoFzVQZxmpy8RlkGcUcRUSeFJHrReTtJHx1SWlqNwhfA7TL1J8Vp15Fk3uZyHhzA/40Ve2w5wfel30yTKu9nvZZuEWRdSHWZZjdQrII5mgvS+GTdvq9KH4Df0XDy0lrBRbNJJPoZW4yGZ8BVLQ6KJZiqE3wySUzAEeGH14BfiyJBo81ltb2UEv6nLxaXLb9pFWPzSnAe3slAfjm26Wte7UO9JcwFBLvs2kqw7Sq6hKPSKIefRVv8LjqqG0WPFemtPesdcm+3sZExpubVPYFep3f71cp9YguJmXKz0TcUtPbSNJ3UcrCOCwVDHR9dimuuIH/oZHlpH52QGtsJhUs9SdIVzrqj30SU+Dy41UR71q58XiSAFwqRVYBvmI1eHtoSvEz5e07jtt26prHdwmA/93m26W168wE4FJw12vmf9GI0A7AdwB9qvpvqnqiNd0dKyyLD77DguiEDK3mAPUyMDKdFWlefOAeax6nQeJKPl2mqpfZvrrgk7oFKl7EuzRLE0+71cp3eIAj4x644NgD2AU7DcYlJltOCtnVdbK2ySrPVC1DTRhvaZ98Ej98ok9ONQPOP08FYhPT1hGaUvkZs31k2eCK1f9vlwD4VRtvlzYLcKSg3jU1gbnuQPFR+2efYLf/UtW7SLh8T5Dw20fsOV0kNd3OAi5j4rJHF9V9wLZdmCbIXNHGjwP/mqGNnVa6SlVPAL5Esq58q3MR7CS2B7B3RqR+OuJYgl8G/jylZbPAtM5zVyYbLUKS615IUkgzS4sbGxcYa+BafFryQd7/VGHlqeofisgPVDWMVFExtaPmE6qZVlU2TX+HCXRXjTWWto5QR8tPm5HSsuKK1T+dW4BjAb7pNtoWnKkD/SUlKFRNbPO8JLNXlOEokjXl6gH0SLtdTpKvfgUYsscXWFN5sgH21UZTRnW0eSgi31fVr5EUfxijmiTj/MpldhsAnlPVfjuYF1qAL0z589MGuQXtY6raZ38zTQV24HwJ+KYXwZ60xJRd1nu+7bNfpcdZBptF5JQp/s8n2Ykhy9r6OPCDak0e2ycINsBRn1jGOBvsCcDbQx2LnzZDo8cVl6/8WfL00znV4Cb6202307rgLC32l1ApVKUA3dqe5qjWeonny/l12lx6rBXYL+N7rtyTr1EcCL8qIvfX4klPUXOGJJVODyFZX16iuvCjH+RaYLeG259B3661IM/y3SPgNhHpt/Xpxhr4rZJdTvphaheFuNq6MYUGshbu/myy1tgbqC6VZYATVfVo4LEgWXXVwIMAJ/jk2USYih9eToJsZix+2oyMLSsuX/kz+nqinfsc8wwT/bMewE0C8Ky18PPVJ3f+qjUNT2ac/ZWu0hpQ7ZyY1ITgTEL3vRbg34APzQLAHQ/ciMgOEqro/7IDXJhYrTVMBZ3ijKCbO162+x3TMeEt0P6VJCcfZgS3YpLcuK81dTLLhezlpG7/JyRMNhWR0UlW2sWOGCMJp+RLGZOaa/cSEdFg4oKUVNQ8TkXKa4LdmxTKGpMA/BntLy4rnny6NdHXzqkGDz+7eT1t4wCvx8Gfr4UcPT+xSJLz/paXJkpTWeMUyH3+t1JdqfVqklLAOzzTNisynLWZWn21Ju+QiJxGsoTzhTp9TS/H9I+5SL2bKB5lnPPtTwS1+uib1mMekP1a6oZkZdvjqTRV3eu2517s9dWv+S7Alyxwp1rzXUiWCr/iLAbvWkokqchDAzWiVSvH6tJWU4CO/ZLG9vMyMa3toY6ZZ3VweFnx9LPtM9Hm1kQP/2bzbdLafbYWByzA6xXBmN+BNy9S/qiInE5CZb2KhOk21mAU11Vx/RrwByJysfUraz3yZw/G64O7Ntrsa3u9vrqIuYhcQ/Lgh8tIqKIm1Vefl56ONpdJHpl0jZ3cllmt6PvMaVpswb7u4Wl9F4C72QKlzftOCHzFlZP2LqM71a77jqPnnkfCzEvfn1aSIpTrG03FpSbzUERetUD3r8ftdwFftD45VF7rRc0n8ckTJltbqCXznBlxUfSeOdTgVABO24KztdhfUpWCn3HUNC03BolBy00QXh+nsj4MPAxcbtlWR5I8A+1AEmJLZAf0kNUKTwL/BTxil6tWONc+wL39so1Id2akpoSkhBG1BrEfMReRl4DPA59X1TfaCPKRJAyw3SxI3NNJXiVhzj0B/IhkHbqp45/fawGXZvKVbGCvQhwSkRdU9d02ZuHM3zLJ+npVVf9a1gL7M/EZa0/a47/M+F23/5SIbJvq89JS2vxKEg595jmRGhBX401rRdDrgH0iwLfGA8MnDK1a9cTcR9HFhJ+5Zz1tXWdXgmzpIhgpWq7EBikbxMz/LJob8Ckq6y+AX5A80KChSL31FeNJfucbU3Al6kXd/aea/thq56lMbFFFBdnfc/dBRH4F/KqRflrQbWzkWkRk8yTtbZksjjINgPt92MpE3n1FImJJGMKT5cZrgT2p0R7T0hpqWbfGw0PHD61a/fguAfBPb15Pa9caHfABLt61jINdjIJRJFYkNmjcPLxW/xHA3vJFyQgapf1X02hlFb/WWo30lJnCwC37k1NGkEtS/a0wwuo9BNB7vHHW75YzgD7hmrLar3Pt6pF/aqVrdKaPKa53XYAmmlw8TZ4yx7NNc8Yf9xsTU2gJKekr5eHiu4bPOOtHuwTA125eT9uCNVpMiC6ZprkBVBGjHsitJi+bZnt6cZV2/w20G/8mJ6dZDEqWZ/uaJjtvtq9jqteVrEIT3ydv0A9XIFZDoTXUmH4ZHD5xeNVZj+4SAP/U3bdqW/carInu16fzwZ6A2yTgrgDdWKDH5JJLM0gdn7we2AVikxR8MFLUoaGTi6tWPbQrAFzW3n2rti44h2J/SXWcyZZpmvsavAL4RIs3pRrP5bcT5Ml68no+edqPFTROKrpgZEhHR04aXLnyP3YJgPfcfatUAG59cFPHNM/aj5UgMFDKUZ5Ls2jy2Gry2MZisnxyn7YaqyEsBGiww4yMLh9aefq9uwTAe++5RVq7z6mKonv9rzLH0+DW8X2sT64mB3kuTaPJQSW18qxWAM6oIYgEwtF4ePjU4VWn980ZwFHBEh3kk3ffIFHHe7TYP4KhgGrZlpjK1tpaDfjU8bKISSYzmK9113PJxdfkokIqap6VLrMAV4lKZnh0xfDq0zfOKcB7EOhbKEbXy277n6QDr0Lrwvbx/Pc4cCsauqYf7n1eLkdB1AXD/Z358MilyTS5jKfF0qvLjBqCAiphLIMjK4fPOu37rFtXYOnSuXksYE9CVeWvNh1MoeNR8+Kv70WDEALLwjYE9pUYC+TkvRBX9tWMH1OTEGCI1RBLYErmbgD+fUtut+cyr0UWbvzWcwTRvjpWVhBJ58Y1ViUIlbAAQztWDZ596p2sW1fgggtK+e3LJZf5YK6XBaKUJh+PoisSKmFLoMPDZw+dvWLXAriq0Ltldqqqpn3vJVvMnNR/zyWXWTfXK081JcVkUyWIDFFLaAaHzxtes+KOXU6DT5HBNCX593xw5NIcElQ/r8wG3cqqEBqittAUB/98eM2pN+Umei65zFdNbqtNVRbOxahKaKSlPYwHh/5i5JzTrs8Bnksu81mTK+pVRFEliKW1M9Ri8eKRNad8JQd4LrnMd01uQ0tqUFSMdHRFZrB4+fA5K67OAZ5LLk0AcjWBgoAGMR3dBVMc+OTwOcuvskSXHOC55DLfzXUMSlkN7d0Fs7145fA5yz9tAZ6vtcwll6bwyWOJ6do9MAMDnx85992f8ACu+e3JJZcmkPabv1vsuOV7Xwagp88vbJ9LLrk0g3Tc9N1PJgDvCZjGA+xyySWXXVv+P5LuBumr3+W8AAAAAElFTkSuQmCC"></span></h1>
+
+<!-- ETAP 1: lokalizacja -->
+<div id="etapLok" class="panel">
+  <label for="lok">Lokalizacja</label>
+  <input id="lok" type="text" placeholder="…podaj lokalizację…" autocomplete="off" autocapitalize="off" spellcheck="false" autofocus>
+  <button id="btnLok">Zatwierdź lokalizację</button>
+</div>
+
+<!-- ETAP 2: skanowanie -->
+<div id="etapSkan" class="hidden">
+  <div class="panel">
+    <div class="lokbar">
+      <div><div class="info" style="margin:0">Lokalizacja</div><div id="lokNazwa" class="lok"></div></div>
+      <div class="cnt"><span id="cntPoz">0</span> poz.<br><span id="cntIl">0</span> szt.</div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <label for="kod">Kod (numer inwentarzowy)</label>
+    <div class="kodWiersz">
+      <input id="kod" type="text" placeholder="…zeskanuj kod…" autocomplete="off" autocapitalize="off" spellcheck="false">
+      <button type="button" id="btnKamera" class="kamera hidden" title="Skanuj kamerą telefonu" aria-label="Skanuj kamerą"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8.5h3l1.6-2.2h6.8L17 8.5h3a1 1 0 0 1 1 1V18a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9.5a1 1 0 0 1 1-1z"/><circle cx="12" cy="13.5" r="3.6"/></svg></button>
+    </div>
+    <div id="ilBox">
+      <label for="il">Ilość</label>
+      <input id="il" type="text" inputmode="decimal" value="1" autocomplete="off">
+    </div>
+    <label class="chk"><input id="szybki" type="checkbox" checked> Tryb szybki – Enter ze skanera zapisuje pozycję z ilością 1</label>
+    <button id="btnDodaj" class="ok big">Zatwierdź pozycję</button>
+    <div id="msg"></div>
+  </div>
+
+  <div class="panel">
+    <div class="row">
+      <button id="btnCofnij" class="secondary small">Cofnij ostatni</button>
+      <button id="btnKopiuj" class="secondary small">Kopiuj do schowka</button>
+    </div>
+    <button id="btnPlik" class="big">Eksport do pliku</button>
+    <button id="btnZakoncz" class="danger small">Zakończ lokalizację (wyczyść spis)</button>
+    <div class="info" id="infoEksport"></div>
+    <div class="czas">
+      <div><div class="et">Rozpoczęcie spisu</div><div class="wart" id="czasStart">–</div></div>
+      <div class="srodek"><div class="data" id="czasData"></div></div>
+      <div><div class="et">Czas trwania</div><div class="wart" id="czasTrwa">00:00:00</div></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="listaNag">
+      <div class="listaOpis">
+        <label id="opisListy">Zeskanowane pozycje (najnowsze u góry)</label>
+        <button type="button" id="btnSort" class="sort" title="Zmień kolejność: najnowsze / najstarsze u góry" aria-label="Zmień kolejność"><svg class="strz" viewBox="0 0 24 24" aria-hidden="true"><path class="up" d="M8 21 V3 L3.5 7.5"/><path class="dn" d="M16 3 V21 L20.5 16.5"/></svg></button>
+        <button type="button" id="btnSortAZ" class="sort az" title="Sortuj po numerze: A–Z / Z–A" aria-label="Sortuj po numerze">A–Z</button>
+        <button type="button" id="btnWykres" class="sort" title="Przebieg spisu – wykres" aria-label="Przebieg spisu – wykres"><svg class="ikWyk" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 21 H21"/><rect x="5" y="12" width="3.2" height="7"/><rect x="10.4" y="6" width="3.2" height="13"/><rect x="15.8" y="9" width="3.2" height="10"/></svg></button>
+      </div>
+      <div class="licznik" title="Liczba pozycji na liście (nie sztuk)"><span class="pref">Ilość pozycji zeskanowanych:</span> <span id="cntLista">0</span></div>
+    </div>
+    <ul id="lista"></ul>
+  </div>
+</div>
+
+<!-- okienko: skanowanie kamerą (getUserMedia + BarcodeDetector) -->
+<div id="kameraOkno" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="kameraTytul">
+  <div class="modalPanel">
+    <div class="modalNag"><span class="mTyt" id="kameraTytul"><span>Skanowanie kamerą</span><span class="mLok" id="kameraTryb"></span></span>
+      <button type="button" id="btnKameraZamknij" class="modalX" aria-label="Zamknij"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M8.2 8.2 L15.8 15.8 M15.8 8.2 L8.2 15.8"/></svg></button>
+    </div>
+    <div class="kamWidok">
+      <video id="kamVideo" playsinline muted autoplay></video>
+      <div class="kamRamka"></div>
+    </div>
+    <div id="kamStatus" class="kamStatus">Uruchamianie kamery…</div>
+    <div class="row kamPrzyciski">
+      <button type="button" id="btnLatarka" class="secondary small hidden">Latarka</button>
+      <button type="button" id="btnKameraKoniec" class="small">Zakończ skanowanie</button>
+    </div>
+  </div>
+</div>
+
+<!-- okienko: parametry eksportu (plik / schowek) -->
+<div id="eksportOkno" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="eksportTytul">
+  <div class="modalPanel">
+    <div class="modalNag"><span class="mTyt" id="eksportTytul"><span>Parametry eksportu</span><span class="mLok" id="eksportCel"></span></span>
+      <button type="button" id="btnEksportZamknij" class="modalX" aria-label="Zamknij"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M8.2 8.2 L15.8 15.8 M15.8 8.2 L8.2 15.8"/></svg></button>
+    </div>
+    <div class="parOpcje">
+      <div class="parFormat" id="parFormat" role="radiogroup" aria-label="Format pliku">
+        <span class="et">Format pliku</span>
+        <label><input type="radio" name="parFormat" value="csv" checked><span>CSV</span></label>
+        <label><input type="radio" name="parFormat" value="xml"><span>XML</span></label>
+        <label><input type="radio" name="parFormat" value="json"><span>JSON</span></label>
+      </div>
+      <label class="chk"><input id="parSpis" type="checkbox" checked><span>Data i godzina rozpoczęcia i zakończenia spisu <small id="parSpisOpis">(linie #START / #KONIEC)</small></span></label>
+      <label class="chk"><input id="parPoz" type="checkbox" checked><span>Data i godzina skanowania każdej pozycji <small id="parPozOpis">(4. kolumna)</small></span></label>
+      <div class="parPodglad"><div class="et" id="parPodgladEt">Podgląd eksportu</div><pre id="parPodglad"></pre></div>
+      <div class="row">
+        <button type="button" id="btnEksportAnuluj" class="secondary small">Anuluj</button>
+        <button type="button" id="btnEksportWykonaj" class="small">Eksportuj</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- okienko: przebieg spisu (słupki co 5 minut + podsumowanie) -->
+<div id="wykresOkno" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="wykresTytul">
+  <div class="modalPanel">
+    <div class="modalNag"><span class="mTyt" id="wykresTytul"><span>Przebieg spisu</span><span class="mLok" id="wykresLok"></span></span>
+      <button type="button" id="btnWykresZamknij" class="modalX" aria-label="Zamknij"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M8.2 8.2 L15.8 15.8 M15.8 8.2 L8.2 15.8"/></svg></button>
+    </div>
+    <div class="modalOpis">Liczba pozycji zeskanowanych w kolejnych 5-minutowych przedziałach</div>
+    <div id="wykresSvg"></div>
+    <div id="wykresPods" class="pods"></div>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var KLUCZ = "inwentaryzator.v2";
+  // stan: { lok: "Pok_1", poz: [{kod, il, t}], eksport: timestamp|null }
+  var stan = { lok: "", poz: [], eksport: null };
+
+  // "desc" – najnowsze u góry, "asc" – najstarsze u góry, "az" / "za" – numer inwentarzowy A–Z / Z–A
+  var sortowanie = "desc";
+  try { var zs = localStorage.getItem(KLUCZ + ".sort"); if (/^(asc|desc|az|za)$/.test(zs)) sortowanie = zs; } catch (e) {}
+
+  var $ = function (id) { return document.getElementById(id); };
+  var el = {
+    etapLok: $("etapLok"), etapSkan: $("etapSkan"), lok: $("lok"), btnLok: $("btnLok"),
+    lokNazwa: $("lokNazwa"), cntPoz: $("cntPoz"), cntLista: $("cntLista"), btnSort: $("btnSort"), btnSortAZ: $("btnSortAZ"), btnWykres: $("btnWykres"), wykresOkno: $("wykresOkno"), wykresSvg: $("wykresSvg"), wykresPods: $("wykresPods"), wykresTytul: $("wykresTytul"), wykresLok: $("wykresLok"), btnWykresZamknij: $("btnWykresZamknij"), opisListy: $("opisListy"), cntIl: $("cntIl"),
+    kod: $("kod"), il: $("il"), szybki: $("szybki"), btnDodaj: $("btnDodaj"), msg: $("msg"),
+    btnCofnij: $("btnCofnij"), btnKopiuj: $("btnKopiuj"), btnPlik: $("btnPlik"),
+    btnZakoncz: $("btnZakoncz"), btnKamera: $("btnKamera"), kameraOkno: $("kameraOkno"), kameraTryb: $("kameraTryb"), kamVideo: $("kamVideo"),
+    kamStatus: $("kamStatus"), btnLatarka: $("btnLatarka"), btnKameraKoniec: $("btnKameraKoniec"), btnKameraZamknij: $("btnKameraZamknij"), eksportOkno: $("eksportOkno"), eksportCel: $("eksportCel"), parSpis: $("parSpis"), parPoz: $("parPoz"),
+    parPodglad: $("parPodglad"), parPodgladEt: $("parPodgladEt"), parFormat: $("parFormat"), parSpisOpis: $("parSpisOpis"), parPozOpis: $("parPozOpis"), btnEksportWykonaj: $("btnEksportWykonaj"), btnEksportAnuluj: $("btnEksportAnuluj"), btnEksportZamknij: $("btnEksportZamknij"), lista: $("lista"), infoEksport: $("infoEksport"),
+    czasStart: $("czasStart"), czasData: $("czasData"), czasTrwa: $("czasTrwa")
+  };
+
+  // ---------- pamięć przeglądarki ----------
+  function zapisz() {
+    try { localStorage.setItem(KLUCZ, JSON.stringify(stan)); return true; }
+    catch (e) { komunikat("Uwaga: nie można zapisać spisu w pamięci przeglądarki – nie odświeżaj strony!", "err"); return false; }
+  }
+  function wczytaj() {
+    try {
+      var s = JSON.parse(localStorage.getItem(KLUCZ) || "null");
+      if (s && typeof s.lok === "string" && Array.isArray(s.poz)) stan = s;
+    } catch (e) { /* brak pamięci – praca tylko w bieżącej sesji */ }
+    try { el.szybki.checked = localStorage.getItem(KLUCZ + ".szybki") !== "0"; } catch (e) {}
+    try { el.parSpis.checked = localStorage.getItem(KLUCZ + ".czas") !== "0"; } catch (e) {}
+    try { el.parPoz.checked = localStorage.getItem(KLUCZ + ".czasPoz") !== "0"; } catch (e) {}
+  }
+
+  // ---------- pomocnicze ----------
+  // usuwa znaki psujące format CSV (separator i końce linii)
+  function czysc(s) { return String(s).replace(/[;\r\n\t]/g, " ").replace(/\s+/g, " ").trim(); }
+
+  function parsujIlosc(txt) {
+    var t = String(txt).replace(/\s/g, "").replace(",", ".");
+    if (!/^\d+(\.\d+)?$/.test(t)) return null;   // liczba >= 0, bez znaku
+    return parseFloat(t);
+  }
+  function fmtIlosc(n) { return String(n).replace(".", ","); }
+
+  function komunikat(tekst, typ) {
+    el.msg.textContent = tekst || "";
+    el.msg.className = typ || "";
+  }
+  function sygnal(ok) {
+    try { if (navigator.vibrate) navigator.vibrate(ok ? 40 : [80, 60, 80]); } catch (e) {}
+  }
+
+  // daty w całej aplikacji w formacie rrrr-mm-dd
+  function fmtData(t) {
+    var d = new Date(t), z = function (n) { return (n < 10 ? "0" : "") + n; };
+    return d.getFullYear() + "-" + z(d.getMonth() + 1) + "-" + z(d.getDate());
+  }
+  function fmtGodzSek(t) {
+    var d = new Date(t), z = function (n) { return (n < 10 ? "0" : "") + n; };
+    return z(d.getHours()) + ":" + z(d.getMinutes()) + ":" + z(d.getSeconds());
+  }
+  // data i godzina dla linii #START / #KONIEC: "rrrr-mm-dd gg:mm"
+  function fmtDataGodz(t) {
+    var d = new Date(t), z = function (n) { return (n < 10 ? "0" : "") + n; };
+    return d.getFullYear() + "-" + z(d.getMonth() + 1) + "-" + z(d.getDate()) + " " + z(d.getHours()) + ":" + z(d.getMinutes());
+  }
+  // eksport: najpierw linie informacyjne (#START – rozpoczęcie spisu, #KONIEC – chwila eksportu),
+  // potem pozycje. Import DaneSpisu zapisuje je w cechach SIG_SpisRozpoczecie / SIG_SpisZakonczenie.
+  // parametry z okna eksportu: #START/#KONIEC oraz 4. kolumna z datą i godziną skanowania (rrrr-mm-dd gg:mm:ss);
+  // bez obu opcji – sam format Lokalizacja;Numer;Ilość (zgodny także ze starszym importem)
+  function csv() {
+    var info = !el.parSpis.checked ? ""
+      : "#START;" + fmtDataGodz(startSpisu()) + "\r\n" + "#KONIEC;" + fmtDataGodz(Date.now()) + "\r\n";
+    var czasPoz = el.parPoz.checked;
+    return info + stan.poz.map(function (p) {
+      return stan.lok + ";" + p.kod + ";" + fmtIlosc(p.il) + (czasPoz && p.t ? ";" + fmtData(p.t) + " " + fmtGodzSek(p.t) : "");
+    }).join("\r\n") + "\r\n";
+  }
+  function nazwaPliku() {
+    var d = new Date(), z = function (n) { return (n < 10 ? "0" : "") + n; };
+    var lok = stan.lok.replace(/[\\\/:*?"<>|\s]+/g, "_");
+    // nazwa pliku: same cyfry daty i godziny (wyjątek od formatu rrrr-mm-dd), np. Pok_1_20261110_0915.csv
+    return lok + "_" + d.getFullYear() + z(d.getMonth() + 1) + z(d.getDate()) + "_" + z(d.getHours()) + z(d.getMinutes()) + ".csv";
+  }
+
+  // ---------- czas pracy ----------
+  function startSpisu() {
+    if (!stan.start) stan.start = stan.poz.length ? stan.poz[0].t : Date.now();   // spis zapisany przez starszą wersję
+    return stan.start;
+  }
+  function pokazCzas() {
+    if (!stan.lok) return;
+    var start = startSpisu(), d = new Date(start), z = function (n) { return (n < 10 ? "0" : "") + n; };
+    el.czasStart.textContent = z(d.getHours()) + ":" + z(d.getMinutes());
+    el.czasData.textContent = fmtData(start);
+    var sek = Math.max(0, Math.floor((Date.now() - start) / 1000));
+    el.czasTrwa.textContent = z(Math.floor(sek / 3600)) + ":" + z(Math.floor(sek / 60) % 60) + ":" + z(sek % 60);
+  }
+  setInterval(pokazCzas, 1000);
+
+  // ---------- widok ----------
+  function odswiez() {
+    var skan = !!stan.lok;
+    el.etapLok.classList.toggle("hidden", skan);
+    el.etapSkan.classList.toggle("hidden", !skan);
+    el.lokNazwa.textContent = stan.lok;
+    pokazCzas();
+
+    var suma = 0, licz = {};
+    stan.poz.forEach(function (p) { suma += p.il; licz[p.kod.toUpperCase()] = (licz[p.kod.toUpperCase()] || 0) + 1; });
+    el.cntPoz.textContent = stan.poz.length;
+    el.cntLista.textContent = stan.poz.length;   // liczba pozycji (linii), nie sztuk
+    el.cntIl.textContent = fmtIlosc(Math.round(suma * 1000) / 1000);
+
+    // kolejność tylko na ekranie (eksport zawsze w kolejności skanowania)
+    var czasowe = sortowanie === "asc" || sortowanie === "desc";
+    el.btnSort.classList.toggle("aktywny", czasowe);
+    el.btnSort.classList.toggle("gora", sortowanie === "asc");   // grot w dół = najnowsze u góry, w górę = najstarsze u góry
+    el.btnSortAZ.classList.toggle("aktywny", !czasowe);
+    el.btnSortAZ.textContent = sortowanie === "za" ? "Z–A" : "A–Z";
+    el.opisListy.textContent = "Zeskanowane pozycje (" + {
+      desc: "najnowsze u góry", asc: "najstarsze u góry", az: "numer A–Z", za: "numer Z–A" }[sortowanie] + ")";
+
+    var kolejnosc = stan.poz.map(function (p, i) { return i; });
+    if (sortowanie === "desc") kolejnosc.reverse();
+    else if (!czasowe) {
+      var znak = sortowanie === "za" ? -1 : 1;
+      kolejnosc.sort(function (a, b) {
+        var w = stan.poz[a].kod.localeCompare(stan.poz[b].kod, "pl", { numeric: true, sensitivity: "base" });
+        return w ? w * znak : a - b;   // przy tym samym numerze – kolejność skanowania
+      });
+    }
+    el.lista.innerHTML = "";
+    for (var k = 0; k < kolejnosc.length; k++) {
+      var i = kolejnosc[k];
+      var p = stan.poz[i], li = document.createElement("li");
+      li.innerHTML = '<span class="nr"></span><span class="kod"></span><span class="dup"></span><span class="il"></span><button type="button" aria-label="Usuń pozycję"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M8.2 8.2 L15.8 15.8 M15.8 8.2 L8.2 15.8"/></svg></button>';
+      li.children[0].textContent = (i + 1) + ".";
+      li.children[1].textContent = p.kod;
+      if (p.t) {                                     // godzina i data skanowania (dodania) pozycji
+        var godz = document.createElement("span");
+        godz.className = "godz";
+        godz.textContent = fmtGodzSek(p.t) + ", " + fmtData(p.t);   // godzina, data zapisu (rrrr-mm-dd)
+        li.children[1].appendChild(godz);
+      }
+      li.children[2].textContent = licz[p.kod.toUpperCase()] > 1 ? "duplikat" : "";
+      li.children[3].textContent = fmtIlosc(p.il);
+      li.children[4].setAttribute("data-i", i);
+      li.children[4].title = "Usuń pozycję";
+      el.lista.appendChild(li);
+    }
+
+    var brak = stan.poz.length === 0;
+    el.btnCofnij.disabled = el.btnKopiuj.disabled = el.btnPlik.disabled = brak;
+    el.infoEksport.textContent = stan.eksport
+      ? "Ostatni eksport: " + fmtData(stan.eksport) + " " + fmtGodzSek(stan.eksport) + (stan.zmianyPoEksporcie ? " – po eksporcie są nowe zmiany!" : "")
+      : (brak ? "" : "Spis nie był jeszcze eksportowany.");
+  }
+
+  function zmieniono() { if (stan.eksport) stan.zmianyPoEksporcie = true; zapisz(); odswiez(); }
+
+  // ---------- etap 1: lokalizacja ----------
+  function zatwierdzLok() {
+    var lok = czysc(el.lok.value);
+    if (!lok) { el.lok.classList.add("bad"); el.lok.focus(); return; }
+    el.lok.classList.remove("bad");
+    stan = { lok: lok, poz: [], eksport: null, start: Date.now() };
+    zapisz(); odswiez(); komunikat("Lokalizacja " + lok + " – skanuj kody.", "ok");
+    el.kod.focus();
+  }
+
+  // ---------- etap 2: pozycje ----------
+  function dodaj(iloscWymuszona) {
+    var kod = czysc(el.kod.value);
+    if (!kod) { el.kod.classList.add("bad"); komunikat("Brak kodu – zeskanuj lub wpisz numer inwentarzowy.", "err"); sygnal(false); el.kod.focus(); return; }
+    var il = iloscWymuszona != null ? iloscWymuszona : parsujIlosc(el.il.value);
+    if (il === null) { el.il.classList.add("bad"); komunikat("Niepoprawna ilość – podaj liczbę ≥ 0.", "err"); sygnal(false); el.il.focus(); el.il.select(); return; }
+    el.kod.classList.remove("bad"); el.il.classList.remove("bad");
+
+    var juz = stan.poz.filter(function (p) { return p.kod.toUpperCase() === kod.toUpperCase(); });
+    stan.poz.push({ kod: kod, il: il, t: Date.now() });
+    zmieniono();
+
+    if (juz.length) {
+      var razem = juz.reduce(function (s, p) { return s + p.il; }, il);
+      komunikat("DUPLIKAT: " + kod + " – zeskanowany " + (juz.length + 1) + "×, łącznie " + fmtIlosc(razem) + ". Usuń, jeśli to pomyłka.", "warn");
+      sygnal(false);
+    } else {
+      komunikat("Zapisano: " + kod + " × " + fmtIlosc(il), "ok");
+      sygnal(true);
+    }
+    el.kod.value = ""; el.il.value = "1"; el.kod.focus();
+  }
+
+  function usun(i) {
+    var p = stan.poz[i];
+    if (!p || !confirm("Usunąć pozycję " + (i + 1) + ": " + p.kod + " × " + fmtIlosc(p.il) + "?")) return;
+    stan.poz.splice(i, 1); zmieniono();
+    komunikat("Usunięto: " + p.kod, "warn"); el.kod.focus();
+  }
+
+  function cofnij() {
+    if (stan.poz.length) usun(stan.poz.length - 1);
+  }
+
+  // ---------- eksport: formaty XML i JSON (format własny „sigma.inwentaryzator.spis” 1.0) ----------
+  var WERSJA_FORMATU = "1.0";
+  function wersjaAplikacji() {   // z nagłówka strony „ver: rrrrMMdd_GG.MM” -> rrrrMMdd_hGGmMM
+    var m = (document.querySelector("h1 .wersja") || {}).textContent;
+    m = m && m.match(/(\d{8})_(\d\d)\.(\d\d)/);
+    return m ? m[1] + "_h" + m[2] + "m" + m[3] : "";
+  }
+  function strefa(t) {           // przesunięcie strefy czasu urządzenia, np. +01:00
+    var o = -new Date(t).getTimezoneOffset(), z = function (n) { return (n < 10 ? "0" : "") + n; };
+    return (o >= 0 ? "+" : "-") + z(Math.floor(Math.abs(o) / 60)) + ":" + z(Math.abs(o) % 60);
+  }
+  function isoZeStrefa(t) { return fmtData(t) + "T" + fmtGodzSek(t) + strefa(t); }
+  function liczba(n) { return String(Math.round(n * 1000) / 1000); }   // kropka dziesiętna
+  function xmlTekst(v) {
+    return String(v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
+  }
+  // wspólny model danych eksportu (te same opcje co CSV)
+  function modelEksportu() {
+    var teraz = Date.now(), start = startSpisu(), suma = 0;
+    stan.poz.forEach(function (p) { suma += p.il; });
+    return {
+      teraz: teraz, start: start, czasSpisu: el.parSpis.checked, czasPoz: el.parPoz.checked,
+      czasTrwaniaMin: Math.max(0, Math.round((teraz - start) / 60e3)), suma: suma
+    };
+  }
+  function xml() {
+    var m = modelEksportu(), L = [];
+    L.push('<?xml version="1.0" encoding="utf-8"?>');
+    L.push('<spisZNatury xmlns="urn:sigma:inwentaryzator:spis" wersjaFormatu="' + WERSJA_FORMATU + '">');
+    L.push('  <eksport data="' + isoZeStrefa(m.teraz) + '" aplikacja="Inwentaryzator" wersjaAplikacji="' + wersjaAplikacji() + '"/>');
+    L.push('  <lokalizacja>' + xmlTekst(stan.lok) + '</lokalizacja>');
+    if (m.czasSpisu) {
+      L.push('  <czasSpisu czasTrwaniaMin="' + m.czasTrwaniaMin + '" strefaCzasu="' + strefa(m.start) + '">');
+      L.push('    <start>', '      <data>' + fmtData(m.start) + '</data>', '      <godzina>' + fmtGodzSek(m.start) + '</godzina>', '    </start>');
+      L.push('    <stop>', '      <data>' + fmtData(m.teraz) + '</data>', '      <godzina>' + fmtGodzSek(m.teraz) + '</godzina>', '    </stop>');
+      L.push('  </czasSpisu>');
+    }
+    L.push('  <podsumowanie pozycji="' + stan.poz.length + '" sztuk="' + liczba(m.suma) + '"/>');
+    L.push('  <pozycje>');
+    stan.poz.forEach(function (p, i) {
+      L.push('    <pozycja lp="' + (i + 1) + '"' + (m.czasPoz && p.t ? ' skanData="' + fmtData(p.t) + '" skanGodzina="' + fmtGodzSek(p.t) + '"' : '') + '>');
+      L.push('      <numerInwentarzowy>' + xmlTekst(p.kod) + '</numerInwentarzowy>');
+      L.push('      <ilosc>' + liczba(p.il) + '</ilosc>');
+      L.push('    </pozycja>');
+    });
+    L.push('  </pozycje>', '</spisZNatury>');
+    return L.join("\r\n") + "\r\n";
+  }
+  function json() {
+    var m = modelEksportu(), o = {
+      format: "sigma.inwentaryzator.spis", wersjaFormatu: WERSJA_FORMATU,
+      eksport: { data: isoZeStrefa(m.teraz), aplikacja: "Inwentaryzator", wersjaAplikacji: wersjaAplikacji() },
+      lokalizacja: stan.lok
+    };
+    if (m.czasSpisu) o.czasSpisu = {
+      czasTrwaniaMin: m.czasTrwaniaMin, strefaCzasu: strefa(m.start),
+      start: { data: fmtData(m.start), godzina: fmtGodzSek(m.start) },
+      stop: { data: fmtData(m.teraz), godzina: fmtGodzSek(m.teraz) }
+    };
+    o.podsumowanie = { pozycji: stan.poz.length, sztuk: Number(liczba(m.suma)) };
+    o.pozycje = stan.poz.map(function (p, i) {
+      var q = { lp: i + 1 };
+      if (m.czasPoz && p.t) { q.skanData = fmtData(p.t); q.skanGodzina = fmtGodzSek(p.t); }
+      q.numerInwentarzowy = p.kod; q.ilosc = Number(liczba(p.il));
+      return q;
+    });
+    return JSON.stringify(o, null, 2).replace(/\n/g, "\r\n") + "\r\n";
+  }
+  var FORMATY = {
+    csv:  { tekst: function () { return csv(); },  typ: "text/csv;charset=utf-8",         rozsz: ".csv",  spis: "(linie #START / #KONIEC)", poz: "(4. kolumna)" },
+    xml:  { tekst: function () { return xml(); },  typ: "application/xml;charset=utf-8",  rozsz: ".xml",  spis: "(sekcja czasSpisu: start / stop)", poz: "(skanData, skanGodzina)" },
+    json: { tekst: function () { return json(); }, typ: "application/json;charset=utf-8", rozsz: ".json", spis: "(sekcja czasSpisu: start / stop)", poz: "(skanData, skanGodzina)" }
+  };
+  function formatEksportu() {   // wybór formatu dla pliku i schowka (wspólny, zapamiętywany)
+    var r = el.parFormat.querySelector("input:checked");
+    return r && FORMATY[r.value] ? r.value : "csv";
+  }
+
+  // ---------- eksport ----------
+  function oznaczEksport() { stan.eksport = Date.now(); stan.zmianyPoEksporcie = false; zapisz(); odswiez(); }
+
+  function eksportPlik() {
+    if (!stan.poz.length) return;
+    var f = FORMATY[formatEksportu()];
+    var blob = new Blob([f.tekst()], { type: f.typ });
+    var url = URL.createObjectURL(blob), a = document.createElement("a");
+    a.href = url; a.download = nazwaPliku().replace(/\.csv$/, f.rozsz);
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(function () { URL.revokeObjectURL(url); }, 60000);   // bez przeładowania strony – pobieranie nie zostanie przerwane
+    oznaczEksport();
+    komunikat("Wyeksportowano " + stan.poz.length + " poz. do pliku " + a.download + ". Sprawdź plik, potem „Zakończ lokalizację”.", "ok");   // format w rozszerzeniu pliku
+  }
+
+  function eksportSchowek() {
+    if (!stan.poz.length) return;
+    var fmt = formatEksportu(), tekst = FORMATY[fmt].tekst();
+    var ok = function () {
+      oznaczEksport();
+      komunikat("Skopiowano " + stan.poz.length + " poz. (" + fmt.toUpperCase() + ") – wklej do cechy DaneSpisu w enova365.", "ok");   // import czyta CSV, XML i JSON
+    };
+    var awaryjnie = function () {
+      var ta = document.createElement("textarea");
+      ta.value = tekst; ta.setAttribute("readonly", ""); ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select();
+      var udane = false; try { udane = document.execCommand("copy"); } catch (e) {}
+      document.body.removeChild(ta);
+      if (udane) ok(); else komunikat("Nie udało się skopiować – użyj eksportu do pliku.", "err");
+    };
+    if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(tekst).then(ok, awaryjnie);
+    else awaryjnie();
+  }
+
+  function zakoncz() {
+    var ostrz = !stan.poz.length ? ""
+      : !stan.eksport ? "UWAGA: spis NIE był eksportowany!\n\n"
+      : stan.zmianyPoEksporcie ? "UWAGA: po ostatnim eksporcie są nowe zmiany!\n\n" : "";
+    if (!confirm(ostrz + "Zakończyć lokalizację " + stan.lok + " i wyczyścić spis (" + stan.poz.length + " poz.)?")) return;
+    stan = { lok: "", poz: [], eksport: null };
+    zapisz(); odswiez(); komunikat("", "");
+    el.lok.value = ""; el.lok.focus();
+  }
+
+  // ---------- zdarzenia ----------
+  el.btnLok.addEventListener("click", zatwierdzLok);
+  el.lok.addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); zatwierdzLok(); } });
+
+  el.btnDodaj.addEventListener("click", function () { dodaj(null); });
+  el.kod.addEventListener("keydown", function (e) {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    if (!czysc(el.kod.value)) return;            // pusty Enter ignorujemy
+    if (el.szybki.checked) dodaj(1); else { el.il.focus(); el.il.select(); }
+  });
+  el.il.addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); dodaj(null); } });
+  el.il.addEventListener("focus", function () { el.il.select(); });
+  el.szybki.addEventListener("change", function () {
+    try { localStorage.setItem(KLUCZ + ".szybki", el.szybki.checked ? "1" : "0"); } catch (e) {}
+    el.kod.focus();
+  });
+
+  // ---------- okno parametrów eksportu ----------
+  var celEksportu = "plik";
+  function podgladEksportu() {
+    var fmt = formatEksportu(), f = FORMATY[fmt];
+    el.parSpisOpis.textContent = f.spis; el.parPozOpis.textContent = f.poz;
+    var linie = f.tekst().split("\r\n").filter(function (l) { return l; });
+    el.parPodglad.textContent = linie.join("\n");   // cały eksport – przewijanie paskiem
+    el.parPodglad.scrollTop = 0;
+    el.parPodgladEt.textContent = "Podgląd eksportu (" + linie.length + " linii)";
+  }
+  function otworzEksport(cel) {
+    if (!stan.poz.length) return;
+    celEksportu = cel;
+    el.eksportCel.textContent = cel === "plik" ? "Eksport do pliku" : "Kopiowanie do schowka";
+    el.btnEksportWykonaj.textContent = cel === "plik" ? "Eksportuj" : "Kopiuj";
+    podgladEksportu();
+    el.eksportOkno.classList.remove("hidden");
+    el.btnEksportWykonaj.focus();
+  }
+  function zamknijEksport() { el.eksportOkno.classList.add("hidden"); el.kod.focus(); }
+  // wybór formatu: zapamiętanie i podgląd
+  try {
+    var zf = localStorage.getItem(KLUCZ + ".format");
+    var rf = zf && el.parFormat.querySelector('input[value="' + zf + '"]');
+    if (rf) rf.checked = true;
+  } catch (e) {}
+  el.parFormat.addEventListener("change", function () {
+    try { localStorage.setItem(KLUCZ + ".format", formatEksportu()); } catch (e) {}
+    podgladEksportu();
+  });
+  [el.parSpis, el.parPoz].forEach(function (c) {
+    c.addEventListener("change", function () {
+      try {
+        localStorage.setItem(KLUCZ + ".czas", el.parSpis.checked ? "1" : "0");
+        localStorage.setItem(KLUCZ + ".czasPoz", el.parPoz.checked ? "1" : "0");
+      } catch (e) {}
+      podgladEksportu();
+    });
+  });
+  el.btnEksportWykonaj.addEventListener("click", function () {
+    el.eksportOkno.classList.add("hidden");
+    if (celEksportu === "plik") eksportPlik(); else eksportSchowek();
+    el.kod.focus();
+  });
+  el.btnEksportAnuluj.addEventListener("click", zamknijEksport);
+  el.btnEksportZamknij.addEventListener("click", zamknijEksport);
+  el.eksportOkno.addEventListener("click", function (e) { if (e.target === el.eksportOkno) zamknijEksport(); });
+
+  function ustawSort(nowe) {
+    sortowanie = nowe;
+    try { localStorage.setItem(KLUCZ + ".sort", sortowanie); } catch (e) {}
+    odswiez();
+    el.kod.focus();
+  }
+  // przycisk czasu: przełącza najnowsze / najstarsze; z sortowania A–Z wraca do „najnowsze”
+  el.btnSortAZ.addEventListener("click", function () { ustawSort(sortowanie === "az" ? "za" : "az"); });
+  el.btnSort.addEventListener("click", function () {
+    sortowanie = sortowanie === "desc" ? "asc" : "desc";
+    try { localStorage.setItem(KLUCZ + ".sort", sortowanie); } catch (e) {}
+    odswiez();
+    el.kod.focus();
+  });
+
+  el.lista.addEventListener("click", function (e) {
+    var b = e.target.closest ? e.target.closest("button[data-i]") : e.target;
+    var i = b && b.getAttribute && b.getAttribute("data-i");
+    if (i !== null && i !== undefined) usun(parseInt(i, 10));
+  });
+  el.btnCofnij.addEventListener("click", cofnij);
+  el.btnKopiuj.addEventListener("click", function () { otworzEksport("schowek"); });
+  el.btnPlik.addEventListener("click", function () { otworzEksport("plik"); });
+  el.btnZakoncz.addEventListener("click", zakoncz);
+
+  // ostrzeżenie przy zamykaniu karty z nieeksportowanym spisem (dane i tak są w pamięci przeglądarki)
+  window.addEventListener("beforeunload", function (e) {
+    if (stan.poz.length && (!stan.eksport || stan.zmianyPoEksporcie)) { e.preventDefault(); e.returnValue = ""; }
+  });
+
+  // ---------- skanowanie kamerą (getUserMedia + BarcodeDetector) ----------
+  // Odczyt kodów przez BarcodeDetector wbudowany w przeglądarkę (Chrome na Androidzie) – bez bibliotek,
+  // kolektor pozostaje jednym plikiem działającym offline. Tryb szybki: każdy odczytany kod jest od razu
+  // zapisywany z ilością 1, kamera skanuje dalej (ten sam kod zapisze się ponownie dopiero, gdy zniknie z kadru na 2 s). Tryb zwykły: kod
+  // trafia do pola, okno się zamyka, kursor w polu ilości.
+  var KAM_FORMATY = ["code_128", "code_39", "code_93", "codabar", "ean_13", "ean_8", "upc_a", "upc_e", "itf", "qr_code", "data_matrix", "pdf417", "aztec"];
+  var kam = { strumien: null, detektor: null, timer: null, zajety: false, ostatni: "", ostatniT: 0, latarka: false };
+  function kameraDostepna() { return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia); }
+  // brak zgody: wskazówki zależne od sposobu otwarcia strony (plik z pamięci urządzenia / adres www)
+  function kamBrakZgody() {
+    var plik = location.protocol === "file:";
+    return "Przeglądarka odmówiła dostępu do kamery. Sprawdź: 1) Ustawienia Androida → Aplikacje → Chrome → Uprawnienia → Aparat: zezwalaj; " +
+      "2) Chrome ⋮ → Ustawienia → Ustawienia witryn → Kamera: włączona" + (plik ? "." : " (i dla tej strony – ikona obok adresu).") +
+      (plik ? " 3) Strona jest otwarta z pliku (file://) – Chrome może nie udostępniać kamery takim stronom; " +
+              "uruchom kolektor z adresu https:// (np. serwer firmowy). Skaner i wpis ręczny działają bez zmian." : "");
+  }
+  function kamStatus(tekst, typ) { el.kamStatus.textContent = tekst; el.kamStatus.className = "kamStatus" + (typ ? " " + typ : ""); }
+
+  function otworzKamere() {
+    el.kameraOkno.classList.remove("hidden");
+    el.kameraTryb.textContent = el.szybki.checked ? "Tryb szybki – kod zapisywany od razu (ilość 1)" : "Tryb zwykły – po odczycie podasz ilość";
+    el.btnLatarka.classList.add("hidden");
+    if (!("BarcodeDetector" in window)) {
+      kamStatus("Ta przeglądarka nie odczytuje kodów z kamery (brak BarcodeDetector). Użyj Chrome na Androidzie albo skanera.", "err");
+      return;
+    }
+    if (!kameraDostepna()) { kamStatus("Kamera niedostępna w tej przeglądarce.", "err"); return; }
+    kamStatus("Uruchamianie kamery…");
+    var detektorGotowy = (BarcodeDetector.getSupportedFormats ? BarcodeDetector.getSupportedFormats() : Promise.resolve(KAM_FORMATY))
+      .then(function (obslugiwane) {
+        var f = KAM_FORMATY.filter(function (x) { return obslugiwane.indexOf(x) >= 0; });
+        kam.detektor = new BarcodeDetector(f.length ? { formats: f } : undefined);
+      });
+    navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false })
+      .then(function (strumien) {
+        if (el.kameraOkno.classList.contains("hidden")) { strumien.getTracks().forEach(function (t) { t.stop(); }); return; }
+        kam.strumien = strumien;
+        el.kamVideo.srcObject = strumien;
+        var gra = el.kamVideo.play(); if (gra && gra.catch) gra.catch(function () {});
+        // latarka – tylko gdy kamera ją udostępnia
+        try {
+          var tor = strumien.getVideoTracks()[0], moz = tor.getCapabilities ? tor.getCapabilities() : {};
+          if (moz.torch) el.btnLatarka.classList.remove("hidden");
+        } catch (e) {}
+        return detektorGotowy;
+      })
+      .then(function () {
+        if (!kam.strumien) return;
+        kamStatus("Nakieruj kamerę na kod w ramce.");
+        kam.timer = setInterval(odczytajKlatke, 250);
+      })
+      .catch(function (e) {
+        var n = e && e.name;
+        kamStatus(n === "NotAllowedError" ? kamBrakZgody()
+          : n === "NotFoundError" || n === "OverconstrainedError" ? "Nie znaleziono kamery w urządzeniu."
+          : n === "NotReadableError" ? "Kamera jest zajęta przez inną aplikację."
+          : n === "SecurityError" ? "Przeglądarka blokuje kamerę dla tej strony (wymagane https lub otwarcie w Chrome)."
+          : "Nie udało się uruchomić kamery: " + (e && (e.message || e.name) || e), "err");
+      });
+  }
+
+  function odczytajKlatke() {
+    if (kam.zajety || !kam.detektor || el.kamVideo.readyState < 2) return;
+    kam.zajety = true;
+    kam.detektor.detect(el.kamVideo).then(function (kody) {
+      kam.zajety = false;
+      if (!kody || !kody.length) return;
+      var kod = czysc(kody[0].rawValue || "");
+      if (!kod) return;
+      var t = Date.now();
+      if (kod === kam.ostatni && t - kam.ostatniT < 2000) { kam.ostatniT = t; return; }   // ten sam kod wciąż w kadrze – ponowny zapis dopiero po 2 s bez tego kodu
+      kam.ostatni = kod; kam.ostatniT = t;
+      obsluzKodZKamery(kod);
+    }, function () { kam.zajety = false; });
+  }
+
+  function obsluzKodZKamery(kod) {
+    var ramka = el.kameraOkno.querySelector(".kamRamka");
+    ramka.classList.add("trafienie"); setTimeout(function () { ramka.classList.remove("trafienie"); }, 400);
+    el.kod.value = kod;
+    if (el.szybki.checked) {
+      dodaj(1);                                   // zapis jak ze skanera (walidacja, duplikat, sygnał)
+      el.kod.blur();                              // bez klawiatury ekranowej pod oknem kamery
+      kamStatus(el.msg.textContent, el.msg.className);
+    } else {
+      zamknijKamere();
+      komunikat("Odczytano kod: " + kod + " – podaj ilość i zatwierdź.", "ok");
+      sygnal(true);
+      el.il.focus(); el.il.select();
+    }
+  }
+
+  function zamknijKamere() {
+    if (kam.timer) { clearInterval(kam.timer); kam.timer = null; }
+    if (kam.strumien) { kam.strumien.getTracks().forEach(function (t) { t.stop(); }); kam.strumien = null; }
+    el.kamVideo.srcObject = null;
+    kam.zajety = false; kam.latarka = false; kam.ostatni = "";
+    el.kameraOkno.classList.add("hidden");
+  }
+
+  el.btnKamera.addEventListener("click", otworzKamere);
+  el.btnKameraKoniec.addEventListener("click", function () { zamknijKamere(); el.kod.focus(); });
+  el.btnKameraZamknij.addEventListener("click", function () { zamknijKamere(); el.kod.focus(); });
+  el.btnLatarka.addEventListener("click", function () {
+    if (!kam.strumien) return;
+    var tor = kam.strumien.getVideoTracks()[0];
+    kam.latarka = !kam.latarka;
+    tor.applyConstraints({ advanced: [{ torch: kam.latarka }] }).catch(function () {});
+    el.btnLatarka.textContent = kam.latarka ? "Latarka – wyłącz" : "Latarka";
+  });
+  if (kameraDostepna()) el.btnKamera.classList.remove("hidden");   // przycisk tylko tam, gdzie jest dostęp do kamery
+
+  // ---------- wykres: przebieg spisu (słupki co 5 minut) ----------
+  var PRZEDZIAL = 5 * 60e3;
+  function fmtCzasTrwania(ms) {
+    var m = Math.round(ms / 60e3);
+    return m < 60 ? m + " min" : Math.floor(m / 60) + " h " + (m % 60) + " min";
+  }
+  function rysujWykres() {
+    // koniec osi: chwila eksportu (jak #KONIEC), gdy po eksporcie nie było zmian; inaczej teraz
+    var t0 = startSpisu(), t1 = (stan.eksport && !stan.zmianyPoEksporcie) ? stan.eksport : Date.now();
+    if (stan.poz.length) t1 = Math.max(t1, stan.poz[stan.poz.length - 1].t);
+    el.wykresLok.textContent = stan.lok;
+
+    // podsumowanie
+    var najd = 0, najdOd = t0, najdDo = t0, prev = t0;
+    stan.poz.forEach(function (p) { if (p.t - prev > najd) { najd = p.t - prev; najdOd = prev; najdDo = p.t; } prev = p.t; });
+    var min = Math.max(1, (t1 - t0) / 60e3);
+    var kafel = function (et, w) { return '<div><div class="et">' + et + '</div><div class="w">' + w + '</div></div>'; };
+    el.wykresPods.innerHTML =
+      kafel("Czas trwania", fmtCzasTrwania(t1 - t0)) +
+      kafel("Pozycji", stan.poz.length) +
+      kafel("Średnie tempo", fmtIlosc((stan.poz.length / min).toFixed(2)) + " <small>poz./min</small>") +
+      kafel("Najdłuższa przerwa", stan.poz.length
+        ? fmtCzasTrwania(najd) + ' <small>(' + fmtGodz(najdOd) + '–' + fmtGodz(najdDo) + ')</small>' : "–");
+
+    if (!stan.poz.length) { el.wykresSvg.innerHTML = '<div class="brak">Brak zeskanowanych pozycji.</div>'; return; }
+
+    // przedziały 5-minutowe od pełnych 5 minut przed startem
+    var p0 = Math.floor(t0 / PRZEDZIAL) * PRZEDZIAL, nk = Math.max(1, Math.ceil((t1 - p0) / PRZEDZIAL));
+    var cnt = []; for (var i = 0; i < nk; i++) cnt.push(0);
+    stan.poz.forEach(function (p) { cnt[Math.min(nk - 1, Math.floor((p.t - p0) / PRZEDZIAL))]++; });
+    var maxC = Math.max.apply(null, cnt), krok = maxC <= 8 ? 2 : maxC <= 20 ? 5 : Math.ceil(maxC / 40) * 10;
+    var maxY = Math.max(krok * 2, Math.ceil(maxC / krok) * krok);
+
+    var W = Math.max(300, el.wykresSvg.clientWidth - 16 || 340), H = 210, L = 30, R = 8, T = 14, B = 24;
+    var pw = W - L - R, ph = H - T - B, bw = pw / nk;
+    var X = function (k) { return L + k * bw; }, Y = function (v) { return T + ph - v / maxY * ph; };
+    var g = "";
+    for (var v = 0; v <= maxY; v += krok)
+      g += '<line x1="' + L + '" y1="' + Y(v) + '" x2="' + (L + pw) + '" y2="' + Y(v) + '" stroke="#e6e9ec"/>' +
+           '<text x="' + (L - 5) + '" y="' + (Y(v) + 3) + '" font-size="9" text-anchor="end" fill="#666">' + v + '</text>';
+    var etykiety = bw >= 7;   // liczby nad słupkami tylko, gdy słupki nie są zbyt wąskie
+    cnt.forEach(function (c, k) {
+      if (!c) return;
+      var x = X(k) + Math.min(1, bw * 0.1), w = Math.max(1, bw - 2 * Math.min(1, bw * 0.1));
+      g += '<rect x="' + x + '" y="' + Y(c) + '" width="' + w + '" height="' + (Y(0) - Y(c)) + '" rx="' + Math.min(2, w / 4) + '" fill="#2e7d32" opacity=".88">' +
+           '<title>' + fmtGodz(p0 + k * PRZEDZIAL) + '–' + fmtGodz(p0 + (k + 1) * PRZEDZIAL) + ': ' + c + ' poz.</title></rect>' +
+           (etykiety ? '<text x="' + (x + w / 2) + '" y="' + (Y(c) - 3) + '" font-size="8" text-anchor="middle" fill="#2e7d32">' + c + '</text>' : '');
+    });
+    // oś czasu: podziałka co 15 / 30 / 60 min zależnie od długości spisu
+    var co = (t1 - p0) <= 2 * 3600e3 ? 15 : (t1 - p0) <= 5 * 3600e3 ? 30 : 60, coMs = co * 60e3;
+    var Xt = function (t) { return L + (t - p0) / (nk * PRZEDZIAL) * pw; };
+    for (var t = Math.ceil(p0 / coMs) * coMs; t <= p0 + nk * PRZEDZIAL; t += coMs)
+      g += '<line x1="' + Xt(t) + '" y1="' + Y(0) + '" x2="' + Xt(t) + '" y2="' + (Y(0) + 4) + '" stroke="#999"/>' +
+           '<text x="' + Xt(t) + '" y="' + (H - 7) + '" font-size="9" text-anchor="' +
+             (Xt(t) > W - 16 ? 'end' : Xt(t) < L + 4 ? 'start' : 'middle') + '" fill="#666">' + fmtGodz(t) + '</text>';   // skrajne etykiety nie wychodzą poza wykres
+    g += '<line x1="' + L + '" y1="' + Y(0) + '" x2="' + (L + pw) + '" y2="' + Y(0) + '" stroke="#999"/>';
+    el.wykresSvg.innerHTML = '<svg viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="Liczba pozycji co 5 minut">' + g + '</svg>';
+  }
+  function fmtGodz(t) { var d = new Date(t), z = function (n) { return (n < 10 ? "0" : "") + n; }; return z(d.getHours()) + ":" + z(d.getMinutes()); }
+  function otworzWykres() { el.wykresOkno.classList.remove("hidden"); rysujWykres(); el.btnWykresZamknij.focus(); }
+  function zamknijWykres() { el.wykresOkno.classList.add("hidden"); el.kod.focus(); }
+  el.btnWykres.addEventListener("click", otworzWykres);
+  el.btnWykresZamknij.addEventListener("click", zamknijWykres);
+  el.wykresOkno.addEventListener("click", function (e) { if (e.target === el.wykresOkno) zamknijWykres(); });   // klik obok okna
+  document.addEventListener("keydown", function (e) {
+    if (e.key !== "Escape") return;
+    if (!el.wykresOkno.classList.contains("hidden")) zamknijWykres();
+    if (!el.eksportOkno.classList.contains("hidden")) zamknijEksport();
+    if (!el.kameraOkno.classList.contains("hidden")) { zamknijKamere(); el.kod.focus(); }
+  });
+
+  // ---------- start ----------
+  wczytaj();
+  odswiez();
+  if (stan.lok) {
+    komunikat(stan.poz.length ? "Przywrócono spis: " + stan.poz.length + " poz. z lokalizacji " + stan.lok + "." : "Lokalizacja " + stan.lok + " – skanuj kody.", "ok");
+    el.kod.focus();
+  } else el.lok.focus();
+})();
+</script>
+</body>
+</html>
