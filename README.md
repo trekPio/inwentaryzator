@@ -1,0 +1,2 @@
+# inwentaryzator
+inwentaryzator testowy
